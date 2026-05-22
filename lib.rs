@@ -176,7 +176,7 @@ pub fn roll_notable_replacement(
 ) -> u32 {
     let mut rng = TinyMt32::new();
     reset_rng(&mut rng, passive_skills_hash, jewel_seed, hidden_salt);
-    rng.generate_range(0, 100);
+    // rng.generate_range(0, 100);
     roll_kalguur_notable(&mut rng)
 }
 
@@ -384,35 +384,6 @@ fn bravo_round(state: &mut [u32; 4], index: &mut u32) {
     state[(((*index + 1) + 1) % 4) as usize] ^= round_state;
     state[i as usize] = round_state;
     *index = (*index + 1) % 4;
-}
-
-/// Run `f` on every `hidden_salt` in `0..=u32::MAX` (parallel by default).
-pub fn bruteforce_third_seed<F>(graph_id: u32, jewel_seed: u32, f: F) -> Vec<u32>
-where
-    F: Fn(u32, &mut TinyMt32) -> bool + Send + Sync,
-{
-    let partial = PartialInit::new();
-    let mut partial = partial;
-    partial.feed_seed(graph_id);
-    partial.feed_seed(jewel_seed);
-
-    (0u32..=u32::MAX)
-        .into_par_iter()
-        .filter_map(|salt| {
-            let mut rng = TinyMt32::new();
-            let mut state = INITIAL_STATE;
-            partial.finish(salt, &mut state);
-            rng.state = state;
-            for _ in 0..8 {
-                rng.generate_next_state();
-            }
-            if f(salt, &mut rng) {
-                Some(salt)
-            } else {
-                None
-            }
-        })
-        .collect()
 }
 
 use rayon::prelude::*;
