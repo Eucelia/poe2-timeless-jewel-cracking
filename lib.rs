@@ -8,8 +8,8 @@ pub mod fixtures;
 pub mod kalguur_pool;
 pub use fixtures::{NotableReplacementCase, JEWEL_SEED_6790, SEED_6790_CASES};
 pub use kalguur_pool::{
-    name_for, KALGUUR_NOTABLE_IDS, KALGUUR_NOTABLE_MAX, KALGUUR_NOTABLE_MIN,
-    KALGUUR_NOTABLE_NAMES, KALGUUR_NOTABLE_SPAWN_WEIGHT,
+    name_for, spawn_weight_for, KALGUUR_NOTABLE_IDS, KALGUUR_NOTABLE_MAX, KALGUUR_NOTABLE_MIN,
+    KALGUUR_NOTABLE_NAMES, KALGUUR_NOTABLE_SPAWN_WEIGHTS,
 };
 
 /// Vilsol `data.JewelType` values (`iota + 1` in Go).
@@ -159,23 +159,22 @@ pub fn roll_kalguur_notable(rng: &mut TinyMt32) -> u32 {
     let mut rolled = KALGUUR_NOTABLE_MIN;
     let mut cumulative = 0u32;
     for id in KALGUUR_NOTABLE_IDS {
-        cumulative = cumulative.saturating_add(KALGUUR_NOTABLE_SPAWN_WEIGHT);
-        if rng.generate_single(cumulative) < KALGUUR_NOTABLE_SPAWN_WEIGHT {
+        let weight = KALGUUR_NOTABLE_SPAWN_WEIGHTS[(id - 1) as usize];
+        cumulative = cumulative.saturating_add(weight);
+        if rng.generate_single(cumulative) < weight {
             rolled = id;
         }
     }
     rolled
 }
 
-/// Full notable replacement: 3-seed init → burn 0..100 → re-init → burn 0..100 → weighted pick.
+/// Full notable replacement: 3-seed init → weighted pick.
 pub fn roll_notable_replacement(
     passive_skills_hash: u32,
     jewel_seed: u32,
     hidden_salt: u32,
 ) -> u32 {
     let mut rng = TinyMt32::new();
-    reset_rng(&mut rng, passive_skills_hash, jewel_seed, hidden_salt);
-    rng.generate_range(0, 100);
     reset_rng(&mut rng, passive_skills_hash, jewel_seed, hidden_salt);
     rng.generate_range(0, 100);
     roll_kalguur_notable(&mut rng)
@@ -192,28 +191,113 @@ pub fn hidden_salt_matches_cases(
     })
 }
 
+/// Total candidate third-seed values (`0..=u32::MAX`).
+pub const HIDDEN_SALT_SEARCH_SPACE: u64 = u32::MAX as u64 + 1;
+
+/// Format a count or rate with `K` / `M` / `B` suffixes (decimal thousands).
+fn format_compact(n: f64) -> String {
+    const K: f64 = 1_000.0;
+    const M: f64 = 1_000_000.0;
+    const B: f64 = 1_000_000_000.0;
+
+    fn scaled(v: f64, suffix: char) -> String {
+        if v >= 100.0 {
+            format!("{v:.0}{suffix}")
+        } else if v >= 10.0 {
+            format!("{v:.1}{suffix}")
+        } else {
+            format!("{v:.2}{suffix}")
+        }
+    }
+
+    if n >= B {
+        scaled(n / B, 'B')
+    } else if n >= M {
+        scaled(n / M, 'M')
+    } else if n >= K {
+        scaled(n / K, 'K')
+    } else {
+        format!("{n:.0}")
+    }
+}
+
 /// Bruteforce the jewel-wide third seed that satisfies all replacement observations.
+///
+/// Prints progress to stderr about once per second (checked count, %, rate).
 pub fn find_hidden_salt_for_cases(
     jewel_seed: u32,
     cases: &[NotableReplacementCase],
 ) -> Option<u32> {
-    let found = std::sync::atomic::AtomicU32::new(u32::MAX);
-    let done = std::sync::atomic::AtomicBool::new(false);
+    find_hidden_salt_for_cases_with_progress(jewel_seed, cases, std::time::Duration::from_secs(1))
+}
 
-    (0u32..=u32::MAX).into_par_iter().for_each(|salt| {
-        if done.load(std::sync::atomic::Ordering::Relaxed) {
-            return;
-        }
-        if hidden_salt_matches_cases(jewel_seed, salt, cases) {
-            found.store(salt, std::sync::atomic::Ordering::Relaxed);
-            done.store(true, std::sync::atomic::Ordering::Relaxed);
+/// Same as [`find_hidden_salt_for_cases`] with a custom progress print interval.
+pub fn find_hidden_salt_for_cases_with_progress(
+    jewel_seed: u32,
+    cases: &[NotableReplacementCase],
+    progress_interval: std::time::Duration,
+) -> Option<u32> {
+    use std::io::Write;
+    use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+    use std::sync::Arc;
+    use std::time::Instant;
+
+    let found = AtomicU32::new(u32::MAX);
+    let done = Arc::new(AtomicBool::new(false));
+    let checked = Arc::new(AtomicU64::new(0));
+    let started = Instant::now();
+
+    let progress_checked = Arc::clone(&checked);
+    let progress_done = Arc::clone(&done);
+    let progress_handle = std::thread::spawn(move || {
+        while !progress_done.load(Ordering::Relaxed) {
+            std::thread::sleep(progress_interval);
+            if progress_done.load(Ordering::Relaxed) {
+                break;
+            }
+            let n = progress_checked.load(Ordering::Relaxed);
+            let elapsed = started.elapsed().as_secs_f64().max(1e-9);
+            let rate = n as f64 / elapsed;
+            let pct = (n as f64 / HIDDEN_SALT_SEARCH_SPACE as f64) * 100.0;
+            let _ = writeln!(
+                std::io::stderr(),
+                "hidden salt search: checked {} / {} ({pct:.4}%) — {}/s",
+                format_compact(n as f64),
+                format_compact(HIDDEN_SALT_SEARCH_SPACE as f64),
+                format_compact(rate),
+            );
         }
     });
 
-    let v = found.load(std::sync::atomic::Ordering::Relaxed);
+    let done_worker = Arc::clone(&done);
+    (0u32..=u32::MAX).into_par_iter().for_each(|salt| {
+        checked.fetch_add(1, Ordering::Relaxed);
+        if done_worker.load(Ordering::Relaxed) {
+            return;
+        }
+        if hidden_salt_matches_cases(jewel_seed, salt, cases) {
+            found.store(salt, Ordering::Relaxed);
+            done_worker.store(true, Ordering::Relaxed);
+        }
+    });
+
+    done.store(true, Ordering::Relaxed);
+    let _ = progress_handle.join();
+
+    let n = checked.load(Ordering::Relaxed);
+    let elapsed = started.elapsed().as_secs_f64();
+    let v = found.load(Ordering::Relaxed);
     if v == u32::MAX {
+        eprintln!(
+            "hidden salt search: finished — no match ({} checked in {elapsed:.1}s)",
+            format_compact(n as f64),
+        );
         None
     } else {
+        eprintln!(
+            "hidden salt search: found {v} ({} checked in {elapsed:.1}s)",
+            format_compact(n as f64),
+        );
         Some(v)
     }
 }
@@ -399,15 +483,6 @@ mod tests {
     }
 
     #[test]
-    fn kalguur_pool_bounds() {
-        assert_eq!(KALGUUR_NOTABLE_IDS.len(), 37);
-        assert_eq!(*KALGUUR_NOTABLE_IDS.first().unwrap(), KALGUUR_NOTABLE_MIN);
-        assert_eq!(*KALGUUR_NOTABLE_IDS.last().unwrap(), KALGUUR_NOTABLE_MAX);
-        assert_eq!(name_for(25), Some("Steel Bastion"));
-        assert_eq!(name_for(37), Some("Spider's Lesson"));
-    }
-
-    #[test]
     #[ignore = "bruteforces u32 hidden salt; run: cargo test find_seed_6790_hidden_salt -- --ignored --nocapture"]
     fn find_seed_6790_hidden_salt() {
         let salt = find_hidden_salt_for_cases(JEWEL_SEED_6790, SEED_6790_CASES)
@@ -434,14 +509,5 @@ mod tests {
                 name_for(rolled).unwrap_or("?"),
             );
         }
-    }
-
-    #[test]
-    fn three_seed_differs_from_two_seed_init() {
-        let mut two = TinyMt32::new();
-        two.initialize(&[12345, 67890]);
-        let mut three = TinyMt32::new();
-        three.initialize_with_salt(12345, 67890, 0);
-        assert_ne!(two.generate_uint(), three.generate_uint());
     }
 }

@@ -2,8 +2,12 @@
 //! Order matches [POE2DB Timeless Jewel Notable](https://poe2db.tw/us/Notable#TimelessJewelNotable):
 //! **Scorched Earth** … **Spider's Lesson** (user wrote “Spider's Blessing”; wiki name is Lesson).
 
-/// Spawn weight for every conquered notable in this pool (in-game / POE2DB for this band).
-pub const KALGUUR_NOTABLE_SPAWN_WEIGHT: u32 = 500;
+/// Per-notable spawn weights from [POE2DB](https://poe2db.tw/us/Notable#TimelessJewelNotable) (`kalguur_notable1`..`37`).
+pub const KALGUUR_NOTABLE_SPAWN_WEIGHTS: [u32; 37] = [
+    1000, 1000, 250, 1000, 500, 500, 500, 500, 500, 500, 500, 500, 250, 1000, 1000, 500, 500,
+    500, 500, 500, 500, 500, 500, 500, 500, 500, 1000, 500, 500, 500, 500, 500, 250, 500, 1000,
+    500, 500,
+];
 
 /// `kalguur_notableN` ids in ascending order (N = 1..=37).
 pub const KALGUUR_NOTABLE_IDS: [u32; 37] = [
@@ -54,6 +58,13 @@ pub const KALGUUR_NOTABLE_NAMES: [&str; 37] = [
     "Oaken Form",
     "Spider's Lesson",
 ];
+
+pub fn spawn_weight_for(id: u32) -> Option<u32> {
+    if id < KALGUUR_NOTABLE_MIN || id > KALGUUR_NOTABLE_MAX {
+        return None;
+    }
+    Some(KALGUUR_NOTABLE_SPAWN_WEIGHTS[(id - 1) as usize])
+}
 
 pub fn name_for(id: u32) -> Option<&'static str> {
     if id < KALGUUR_NOTABLE_MIN || id > KALGUUR_NOTABLE_MAX {
