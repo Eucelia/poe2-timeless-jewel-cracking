@@ -15,7 +15,7 @@ Research on PRNG seeding:
 Changes for POE2 from the POE 1 version. These have been confirmed via Ghidra:
 1. The PRNG is now seeded with seven seeds instead of two
    1. The first seed is a lookup value (likely related to the notable id)
-   2. The second seed is the jewel seed. This is the one printed in the debug log NOT the one displayed on the jewel.
+   2. The second seed is the jewel seed. This is the one printed in the debug log NOT the one displayed on the jewel.The jewel seed itself is constrainted to a uint16. (Though it is zero-padded and cast to a uint32 in the PRNG)
    3. The third seed is some uint32 that I haven't figured out yet.
 2. The PRNG has _slightly_ different initial parameters. See `lib.rs` for the new initial parameters.
 
