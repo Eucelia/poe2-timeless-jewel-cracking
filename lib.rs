@@ -1,12 +1,12 @@
 //! Faithful port of Vilsol/timeless-jewels `random` package (TinyMT32 variant).
-//! POE2 initializes TinyMT with three seeds: `[passive_skills_hash, jewel_seed, hidden_salt]`.
+//! POE2 init: exactly two seeds `[passive_skills_hash, jewel_seed]` (Vilsol POE1 shape).
 //!
 //! Jewel type is fixed to Heroic Tragedy (POE2 timeless jewel). Scope is conquered **notables**
 //! only (keystones / conqueror mods are not modeled).
 
 pub mod fixtures;
 pub mod kalguur_pool;
-pub use fixtures::{NotableReplacementCase, JEWEL_SEED_6790, SEED_6790_CASES};
+pub use fixtures::{NotableReplacementCase, JEWEL_SEED_17962, SEED_17962_CASES};
 pub use kalguur_pool::{
     name_for, spawn_weight_for, KALGUUR_NOTABLE_IDS, KALGUUR_NOTABLE_MAX, KALGUUR_NOTABLE_MIN,
     KALGUUR_NOTABLE_NAMES, KALGUUR_NOTABLE_SPAWN_WEIGHTS,
@@ -83,13 +83,12 @@ impl TinyMt32 {
         }
     }
 
-    /// Known graph id + jewel seed; third value is the hidden salt under test.
+    /// Two-seed init: `[passive_skills_hash, jewel_seed]`.
     #[inline(always)]
-    pub fn initialize_with_salt(&mut self, graph_id: u32, jewel_seed: u32, hidden_salt: u32) {
+    pub fn initialize_two_seeds(&mut self, passive_skills_hash: u32, jewel_seed: u32) {
         let mut s = PartialInit::new();
-        s.feed_seed(graph_id);
-        s.feed_seed(jewel_seed);
-        s.finish(hidden_salt, &mut self.state);
+        s.feed_seed(passive_skills_hash);
+        s.finish(jewel_seed, &mut self.state);
         for _ in 0..8 {
             self.generate_next_state();
         }
@@ -143,15 +142,10 @@ impl TinyMt32 {
     }
 }
 
-/// POE2 TinyMT init: `[passive_skills_hash, jewel_seed, hidden_salt]`.
+/// TinyMT init: `[passive_skills_hash, jewel_seed]`.
 #[inline(always)]
-pub fn reset_rng(
-    rng: &mut TinyMt32,
-    passive_skills_hash: u32,
-    jewel_seed: u32,
-    hidden_salt: u32,
-) {
-    rng.initialize_with_salt(passive_skills_hash, jewel_seed, hidden_salt);
+pub fn reset_rng(rng: &mut TinyMt32, passive_skills_hash: u32, jewel_seed: u32) {
+    rng.initialize_two_seeds(passive_skills_hash, jewel_seed);
 }
 
 /// Roll which conquered notable replaces a radius notable (ascending `kalguur_notable` ids).
@@ -168,31 +162,26 @@ pub fn roll_kalguur_notable(rng: &mut TinyMt32) -> u32 {
     rolled
 }
 
-/// Full notable replacement: 3-seed init → weighted pick.
-pub fn roll_notable_replacement(
-    passive_skills_hash: u32,
-    jewel_seed: u32,
-    hidden_salt: u32,
-) -> u32 {
+/// Full notable replacement for Heroic Tragedy (Kalguur, `NotableReplacementSpawnWeight` 100).
+///
+/// Matches Vilsol `ReplacePassiveSkill`: `Reset` → one `Generate(0, 100)` on notables → weighted pick.
+/// (`IsPassiveSkillReplaced` skips its own roll when spawn weight is 100.)
+pub fn roll_notable_replacement(passive_skills_hash: u32, jewel_seed: u32) -> u32 {
     let mut rng = TinyMt32::new();
-    reset_rng(&mut rng, passive_skills_hash, jewel_seed, hidden_salt);
-    // rng.generate_range(0, 100);
+    reset_rng(&mut rng, passive_skills_hash, jewel_seed);
+    rng.generate_range(0, 100);
     roll_kalguur_notable(&mut rng)
 }
 
-/// True when `hidden_salt` reproduces every `cases` observation for `jewel_seed`.
-pub fn hidden_salt_matches_cases(
-    jewel_seed: u32,
-    hidden_salt: u32,
-    cases: &[NotableReplacementCase],
-) -> bool {
+/// True when `jewel_seed` reproduces every `cases` observation.
+pub fn jewel_seed_matches_cases(jewel_seed: u32, cases: &[NotableReplacementCase]) -> bool {
     cases.iter().all(|case| {
-        roll_notable_replacement(case.old_hash, jewel_seed, hidden_salt) == case.new_kalguur_notable
+        roll_notable_replacement(case.old_hash, jewel_seed) == case.new_kalguur_notable
     })
 }
 
-/// Total candidate third-seed values (`0..=u32::MAX`).
-pub const HIDDEN_SALT_SEARCH_SPACE: u64 = u32::MAX as u64 + 1;
+/// Total candidate jewel seeds (`0..=u32::MAX`). `JEWEL_SEED_MIN`/`MAX` are in-game display only.
+pub const JEWEL_SEED_SEARCH_SPACE: u64 = u32::MAX as u64 + 1;
 
 /// Format a count or rate with `K` / `M` / `B` suffixes (decimal thousands).
 fn format_compact(n: f64) -> String {
@@ -221,19 +210,15 @@ fn format_compact(n: f64) -> String {
     }
 }
 
-/// Bruteforce the jewel-wide third seed that satisfies all replacement observations.
+/// Bruteforce the jewel seed that satisfies all replacement observations.
 ///
 /// Prints progress to stderr about once per second (checked count, %, rate).
-pub fn find_hidden_salt_for_cases(
-    jewel_seed: u32,
-    cases: &[NotableReplacementCase],
-) -> Option<u32> {
-    find_hidden_salt_for_cases_with_progress(jewel_seed, cases, std::time::Duration::from_secs(1))
+pub fn find_jewel_seed_for_cases(cases: &[NotableReplacementCase]) -> Option<u32> {
+    find_jewel_seed_for_cases_with_progress(cases, std::time::Duration::from_secs(1))
 }
 
-/// Same as [`find_hidden_salt_for_cases`] with a custom progress print interval.
-pub fn find_hidden_salt_for_cases_with_progress(
-    jewel_seed: u32,
+/// Same as [`find_jewel_seed_for_cases`] with a custom progress print interval.
+pub fn find_jewel_seed_for_cases_with_progress(
     cases: &[NotableReplacementCase],
     progress_interval: std::time::Duration,
 ) -> Option<u32> {
@@ -258,12 +243,12 @@ pub fn find_hidden_salt_for_cases_with_progress(
             let n = progress_checked.load(Ordering::Relaxed);
             let elapsed = started.elapsed().as_secs_f64().max(1e-9);
             let rate = n as f64 / elapsed;
-            let pct = (n as f64 / HIDDEN_SALT_SEARCH_SPACE as f64) * 100.0;
+            let pct = (n as f64 / JEWEL_SEED_SEARCH_SPACE as f64) * 100.0;
             let _ = writeln!(
                 std::io::stderr(),
-                "hidden salt search: checked {} / {} ({pct:.4}%) — {}/s",
+                "jewel seed search: checked {} / {} ({pct:.4}%) — {}/s",
                 format_compact(n as f64),
-                format_compact(HIDDEN_SALT_SEARCH_SPACE as f64),
+                format_compact(JEWEL_SEED_SEARCH_SPACE as f64),
                 format_compact(rate),
             );
         }
@@ -275,7 +260,7 @@ pub fn find_hidden_salt_for_cases_with_progress(
         if done_worker.load(Ordering::Relaxed) {
             return;
         }
-        if hidden_salt_matches_cases(jewel_seed, salt, cases) {
+        if jewel_seed_matches_cases(salt, cases) {
             found.store(salt, Ordering::Relaxed);
             done_worker.store(true, Ordering::Relaxed);
         }
@@ -289,20 +274,20 @@ pub fn find_hidden_salt_for_cases_with_progress(
     let v = found.load(Ordering::Relaxed);
     if v == u32::MAX {
         eprintln!(
-            "hidden salt search: finished — no match ({} checked in {elapsed:.1}s)",
+            "jewel seed search: finished — no match ({} checked in {elapsed:.1}s)",
             format_compact(n as f64),
         );
         None
     } else {
         eprintln!(
-            "hidden salt search: found {v} ({} checked in {elapsed:.1}s)",
+            "jewel seed search: found {v} ({} checked in {elapsed:.1}s)",
             format_compact(n as f64),
         );
         Some(v)
     }
 }
 
-/// State after the first two seeds — reuse across all third-seed candidates.
+/// State after the first seed — reuse across all second-seed (jewel seed) candidates.
 #[derive(Clone, Copy)]
 pub struct PartialInit {
     state: [u32; 4],
@@ -321,11 +306,11 @@ impl PartialInit {
         alpha_round_with_seed(&mut self.state, &mut self.index, seed);
     }
 
-    /// Third seed + closing alpha/bravo rounds (not the final 8× `generate_next_state`).
-    pub fn finish(&self, hidden_salt: u32, out: &mut [u32; 4]) {
+    /// Second seed + closing alpha/bravo rounds (not the final 8× `generate_next_state`).
+    pub fn finish(&self, seed: u32, out: &mut [u32; 4]) {
         let mut state = self.state;
         let mut index = self.index;
-        alpha_round_with_seed(&mut state, &mut index, hidden_salt);
+        alpha_round_with_seed(&mut state, &mut index, seed);
         for _ in 0..5 {
             alpha_round_index_only(&mut state, &mut index);
         }
@@ -388,35 +373,63 @@ fn bravo_round(state: &mut [u32; 4], index: &mut u32) {
 
 use rayon::prelude::*;
 
+/// Run `f` on every jewel seed in `0..=u32::MAX` (parallel by default).
+pub fn bruteforce_jewel_seed<F>(passive_skills_hash: u32, f: F) -> Vec<u32>
+where
+    F: Fn(u32, &mut TinyMt32) -> bool + Send + Sync,
+{
+    let partial = {
+        let mut p = PartialInit::new();
+        p.feed_seed(passive_skills_hash);
+        p
+    };
+
+    (0u32..=u32::MAX)
+        .into_par_iter()
+        .filter_map(|jewel_seed| {
+            let mut rng = TinyMt32::new();
+            let mut state = INITIAL_STATE;
+            partial.finish(jewel_seed, &mut state);
+            rng.state = state;
+            for _ in 0..8 {
+                rng.generate_next_state();
+            }
+            if f(jewel_seed, &mut rng) {
+                Some(jewel_seed)
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
 /// Match the first tempered uint32 after initialization (one `generate_uint` call).
-pub fn find_salt_by_first_roll(
-    graph_id: u32,
-    jewel_seed: u32,
+pub fn find_jewel_seed_by_first_roll(
+    passive_skills_hash: u32,
     expected_first_roll: u32,
 ) -> Option<u32> {
     let partial = {
         let mut p = PartialInit::new();
-        p.feed_seed(graph_id);
-        p.feed_seed(jewel_seed);
+        p.feed_seed(passive_skills_hash);
         p
     };
 
     let found = std::sync::atomic::AtomicU32::new(u32::MAX);
     let done = std::sync::atomic::AtomicBool::new(false);
 
-    (0u32..=u32::MAX).into_par_iter().for_each(|salt| {
+    (0u32..=u32::MAX).into_par_iter().for_each(|jewel_seed| {
         if done.load(std::sync::atomic::Ordering::Relaxed) {
             return;
         }
         let mut state = INITIAL_STATE;
-        partial.finish(salt, &mut state);
+        partial.finish(jewel_seed, &mut state);
         let mut rng = TinyMt32 { state };
         for _ in 0..8 {
             rng.generate_next_state();
         }
         rng.generate_next_state();
         if rng.temper() == expected_first_roll {
-            found.store(salt, std::sync::atomic::Ordering::Relaxed);
+            found.store(jewel_seed, std::sync::atomic::Ordering::Relaxed);
             done.store(true, std::sync::atomic::Ordering::Relaxed);
         }
     });
@@ -434,16 +447,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn seed_6790_fixture() {
-        assert_eq!(JEWEL_SEED_6790, 6790);
-        assert_eq!(SEED_6790_CASES.len(), 9);
-        let bone = &SEED_6790_CASES[1];
+    fn seed_17962_fixture() {
+        assert_eq!(JEWEL_SEED_17962, 17962);
+        assert_eq!(SEED_17962_CASES.len(), 9);
+        let bone = &SEED_17962_CASES[1];
         assert_eq!(bone.old_name, "Bone Chains");
         assert_eq!(bone.old_hash, 26563);
         assert_eq!(bone.new_name, "Steel Bastion");
         assert_eq!(bone.new_kalguur_notable, 25);
         // Two different originals roll the same conquered notable.
-        let fiery: Vec<_> = SEED_6790_CASES
+        let fiery: Vec<_> = SEED_17962_CASES
             .iter()
             .filter(|c| c.new_kalguur_notable == 9)
             .map(|c| c.old_hash)
@@ -454,21 +467,35 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "bruteforces u32 hidden salt; run: cargo test find_seed_6790_hidden_salt -- --ignored --nocapture"]
-    fn find_seed_6790_hidden_salt() {
-        let salt = find_hidden_salt_for_cases(JEWEL_SEED_6790, SEED_6790_CASES)
-            .expect("no hidden salt satisfies all SEED_6790_CASES");
-        println!("JEWEL_SEED_6790 hidden_salt = {salt}");
-        assert!(hidden_salt_matches_cases(JEWEL_SEED_6790, salt, SEED_6790_CASES));
+    fn seed_17962_fixture_print() {
+        println!("jewel_seed = {JEWEL_SEED_17962}");
+        let mut matches = 0u32;
+        let mut mismatches = 0u32;
+        for case in SEED_17962_CASES {
+            let rolled = roll_notable_replacement(case.old_hash, JEWEL_SEED_17962);
+            let rolled_name = name_for(rolled).unwrap_or("?");
+            if rolled == case.new_kalguur_notable {
+                matches += 1;
+            } else {
+                mismatches += 1;
+            }
+            println!(
+                "{} (hash {}) -> {} (kalguur_notable{rolled})  [expected: {} (kalguur_notable{})]",
+                case.old_name,
+                case.old_hash,
+                rolled_name,
+                case.new_name,
+                case.new_kalguur_notable,
+            );
+        }
+        println!("matches: {matches}, mismatches: {mismatches}");
     }
 
     #[test]
-    #[ignore = "set fixtures::JEWEL_SEED_6790_HIDDEN_SALT after find_seed_6790_hidden_salt"]
-    fn seed_6790_three_seed_rolls() {
-        let salt = fixtures::JEWEL_SEED_6790_HIDDEN_SALT
-            .expect("run find_seed_6790_hidden_salt and paste salt into fixtures.rs");
-        for case in SEED_6790_CASES {
-            let rolled = roll_notable_replacement(case.old_hash, JEWEL_SEED_6790, salt);
+    #[ignore = "simulator mismatch; run: cargo test seed_17962_two_seed_rolls -- --ignored --nocapture"]
+    fn seed_17962_two_seed_rolls() {
+        for case in SEED_17962_CASES {
+            let rolled = roll_notable_replacement(case.old_hash, JEWEL_SEED_17962);
             assert_eq!(
                 rolled,
                 case.new_kalguur_notable,
