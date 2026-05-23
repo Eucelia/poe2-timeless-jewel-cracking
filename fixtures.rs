@@ -3,7 +3,7 @@
 //! Conquered notables: `kalguur_notable` code suffix from POE2DB (no PassiveSkillsHash on those pages).
 
 /// Jewel seed shared by every case in this fixture.
-pub const JEWEL_SEED_6790: u32 = 6790;
+pub const JEWEL_SEED_6790: u32 = 17962;
 
 /// Third RNG seed for `JEWEL_SEED_6790`, once discovered via `find_hidden_salt_for_cases`.
 /// Run: `cargo test find_seed_6790_hidden_salt -- --ignored --nocapture`

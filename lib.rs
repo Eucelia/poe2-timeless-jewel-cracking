@@ -176,7 +176,7 @@ pub fn roll_notable_replacement(
 ) -> u32 {
     let mut rng = TinyMt32::new();
     reset_rng(&mut rng, passive_skills_hash, jewel_seed, hidden_salt);
-    // rng.generate_range(0, 100);
+    rng.generate_range(0, 100);
     roll_kalguur_notable(&mut rng)
 }
 
