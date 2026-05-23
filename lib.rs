@@ -1,5 +1,6 @@
 //! Faithful port of Vilsol/timeless-jewels `random` package (TinyMT32 variant).
-//! POE2 initializes TinyMT with three seeds: `[passive_skills_hash, jewel_seed, hidden_salt]`.
+//! POE2 initializes TinyMT with seven seeds:
+//! `[seed0, (uint16_t)jewel_seed, notable_id, 0, 0, 0, 0]`.
 //!
 //! Jewel type is fixed to Heroic Tragedy (POE2 timeless jewel). Scope is conquered **notables**
 //! only (keystones / conqueror mods are not modeled).
@@ -30,9 +31,9 @@ pub const JEWEL_SEED_MAX: u32 = 8000;
 pub const ALTERNATE_TREE_VERSION_INDEX: u32 = JEWEL_TYPE as u32;
 
 const INITIAL_STATE: [u32; 4] = [
-    0x4033_6050,
+    0x4033_6051,
     0xCFA3_723C,
-    0x3CAC_5F6F,
+    0x3CAC_5F70,
     0x3793_FDFF,
 ];
 
@@ -45,6 +46,29 @@ const TINYMT32_BRAVO: u32 = 0x5D58_8B65;
 const MAT1: u32 = 0x8F70_11EE;
 const MAT2: u32 = 0xFC78_FF1F;
 const TMAT: u32 = 0x3793_FDFF;
+
+/// Number of `uint32_t` values passed to POE2 timeless-jewel TinyMT init.
+pub const POE2_TINYMT_SEED_LEN: usize = 7;
+
+/// `seed[1]` value fed into TinyMT (`(uint16_t)jewel_seed`).
+#[inline(always)]
+pub fn jewel_seed_rng_seed(jewel_seed: u32) -> u32 {
+    jewel_seed as u16 as u32
+}
+
+/// POE2 seed array: three meaningful values, then four zero padding entries.
+#[inline(always)]
+pub fn poe2_tinymt_seeds(notable_id: u32, jewel_seed: u32, seed0: u32) -> [u32; POE2_TINYMT_SEED_LEN] {
+    [
+        notable_id,
+        jewel_seed_rng_seed(jewel_seed),
+        seed0,
+        0,
+        0,
+        0,
+        0,
+    ]
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TinyMt32 {
@@ -65,7 +89,7 @@ impl TinyMt32 {
         Self::default()
     }
 
-    /// Full `Initialize` with an arbitrary seed list (game may use 3+ values).
+    /// Full `Initialize` with an arbitrary seed list (POE2 uses [`POE2_TINYMT_SEED_LEN`] values).
     pub fn initialize(&mut self, seeds: &[u32]) {
         self.state = INITIAL_STATE;
         let mut index: u32 = 1;
@@ -83,16 +107,10 @@ impl TinyMt32 {
         }
     }
 
-    /// Known graph id + jewel seed; third value is the hidden salt under test.
+    /// Seven-seed POE2 init via [`poe2_tinymt_seeds`].
     #[inline(always)]
-    pub fn initialize_with_salt(&mut self, graph_id: u32, jewel_seed: u32, hidden_salt: u32) {
-        let mut s = PartialInit::new();
-        s.feed_seed(graph_id);
-        s.feed_seed(jewel_seed);
-        s.finish(hidden_salt, &mut self.state);
-        for _ in 0..8 {
-            self.generate_next_state();
-        }
+    pub fn initialize_with_salt(&mut self, notable_id: u32, jewel_seed: u32, seed0: u32) {
+        self.initialize(&poe2_tinymt_seeds(notable_id, jewel_seed, seed0));
     }
 
     #[inline(always)]
@@ -143,15 +161,10 @@ impl TinyMt32 {
     }
 }
 
-/// POE2 TinyMT init: `[passive_skills_hash, jewel_seed, hidden_salt]`.
+/// POE2 TinyMT init: [`poe2_tinymt_seeds`].
 #[inline(always)]
-pub fn reset_rng(
-    rng: &mut TinyMt32,
-    passive_skills_hash: u32,
-    jewel_seed: u32,
-    hidden_salt: u32,
-) {
-    rng.initialize_with_salt(passive_skills_hash, jewel_seed, hidden_salt);
+pub fn reset_rng(rng: &mut TinyMt32, notable_id: u32, jewel_seed: u32, seed0: u32) {
+    rng.initialize_with_salt(notable_id, jewel_seed, seed0);
 }
 
 /// Roll which conquered notable replaces a radius notable (ascending `kalguur_notable` ids).
@@ -168,15 +181,10 @@ pub fn roll_kalguur_notable(rng: &mut TinyMt32) -> u32 {
     rolled
 }
 
-/// Full notable replacement: 3-seed init → weighted pick.
-pub fn roll_notable_replacement(
-    passive_skills_hash: u32,
-    jewel_seed: u32,
-    hidden_salt: u32,
-) -> u32 {
+/// Full notable replacement: 7-seed init → weighted pick.
+pub fn roll_notable_replacement(notable_id: u32, jewel_seed: u32, seed0: u32) -> u32 {
     let mut rng = TinyMt32::new();
-    reset_rng(&mut rng, passive_skills_hash, jewel_seed, hidden_salt);
-    rng.generate_range(0, 100);
+    reset_rng(&mut rng, notable_id, jewel_seed, seed0 );
     roll_kalguur_notable(&mut rng)
 }
 
@@ -187,11 +195,12 @@ pub fn hidden_salt_matches_cases(
     cases: &[NotableReplacementCase],
 ) -> bool {
     cases.iter().all(|case| {
-        roll_notable_replacement(case.old_hash, jewel_seed, hidden_salt) == case.new_kalguur_notable
+        roll_notable_replacement(case.old_hash, jewel_seed, hidden_salt)
+            == case.new_kalguur_notable
     })
 }
 
-/// Total candidate third-seed values (`0..=u32::MAX`).
+/// Total candidate `seed[0]` values (`0..=u32::MAX`).
 pub const HIDDEN_SALT_SEARCH_SPACE: u64 = u32::MAX as u64 + 1;
 
 /// Format a count or rate with `K` / `M` / `B` suffixes (decimal thousands).
@@ -221,7 +230,7 @@ fn format_compact(n: f64) -> String {
     }
 }
 
-/// Bruteforce the jewel-wide third seed that satisfies all replacement observations.
+/// Bruteforce the jewel-wide `seed[0]` that satisfies all replacement observations.
 ///
 /// Prints progress to stderr about once per second (checked count, %, rate).
 pub fn find_hidden_salt_for_cases(
@@ -302,40 +311,6 @@ pub fn find_hidden_salt_for_cases_with_progress(
     }
 }
 
-/// State after the first two seeds — reuse across all third-seed candidates.
-#[derive(Clone, Copy)]
-pub struct PartialInit {
-    state: [u32; 4],
-    index: u32,
-}
-
-impl PartialInit {
-    pub fn new() -> Self {
-        Self {
-            state: INITIAL_STATE,
-            index: 1,
-        }
-    }
-
-    pub fn feed_seed(&mut self, seed: u32) {
-        alpha_round_with_seed(&mut self.state, &mut self.index, seed);
-    }
-
-    /// Third seed + closing alpha/bravo rounds (not the final 8× `generate_next_state`).
-    pub fn finish(&self, hidden_salt: u32, out: &mut [u32; 4]) {
-        let mut state = self.state;
-        let mut index = self.index;
-        alpha_round_with_seed(&mut state, &mut index, hidden_salt);
-        for _ in 0..5 {
-            alpha_round_index_only(&mut state, &mut index);
-        }
-        for _ in 0..4 {
-            bravo_round(&mut state, &mut index);
-        }
-        *out = state;
-    }
-}
-
 #[inline(always)]
 fn manipulate_alpha(value: u32) -> u32 {
     (value ^ (value >> 27)).wrapping_mul(TINYMT32_ALPHA)
@@ -390,17 +365,10 @@ use rayon::prelude::*;
 
 /// Match the first tempered uint32 after initialization (one `generate_uint` call).
 pub fn find_salt_by_first_roll(
-    graph_id: u32,
+    notable_id: u32,
     jewel_seed: u32,
     expected_first_roll: u32,
 ) -> Option<u32> {
-    let partial = {
-        let mut p = PartialInit::new();
-        p.feed_seed(graph_id);
-        p.feed_seed(jewel_seed);
-        p
-    };
-
     let found = std::sync::atomic::AtomicU32::new(u32::MAX);
     let done = std::sync::atomic::AtomicBool::new(false);
 
@@ -408,12 +376,8 @@ pub fn find_salt_by_first_roll(
         if done.load(std::sync::atomic::Ordering::Relaxed) {
             return;
         }
-        let mut state = INITIAL_STATE;
-        partial.finish(salt, &mut state);
-        let mut rng = TinyMt32 { state };
-        for _ in 0..8 {
-            rng.generate_next_state();
-        }
+        let mut rng = TinyMt32::new();
+        rng.initialize_with_salt(notable_id, jewel_seed, salt);
         rng.generate_next_state();
         if rng.temper() == expected_first_roll {
             found.store(salt, std::sync::atomic::Ordering::Relaxed);
@@ -435,7 +399,10 @@ mod tests {
 
     #[test]
     fn seed_6790_fixture() {
-        assert_eq!(JEWEL_SEED_6790, 6790);
+        assert_eq!(jewel_seed_rng_seed(JEWEL_SEED_6790), JEWEL_SEED_6790 as u16 as u32);
+        let seeds = poe2_tinymt_seeds(1, JEWEL_SEED_6790, 4810);
+        assert_eq!(seeds.len(), POE2_TINYMT_SEED_LEN);
+        assert_eq!(seeds[3..], [0, 0, 0, 0]);
         assert_eq!(SEED_6790_CASES.len(), 9);
         let bone = &SEED_6790_CASES[1];
         assert_eq!(bone.old_name, "Bone Chains");
